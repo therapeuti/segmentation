@@ -250,8 +250,12 @@ def _smooth_tumor(data, zooms):
     mask_final = mask_final & organ_mask.astype(np.uint8)
 
     result = data.copy()
-    result[tumor_mask] = 1  # 기존 종양 → 신장
-    result[mask_final == 1] = 2  # smoothed 종양
+    # 기존 종양 → 배경 인접이면 배경, 아니면 신장
+    struct_adj = ndimage.generate_binary_structure(3, 1)
+    bg_adj = ndimage.binary_dilation((data == 0), structure=struct_adj)
+    result[tumor_mask & bg_adj] = 0   # 배경 인접 → 배경
+    result[tumor_mask & ~bg_adj] = 1  # 내부 → 신장
+    result[mask_final == 1] = 2       # smoothed 종양
 
     after = int(np.sum(result == 2))
     before_s = surface_ratio(tumor_mask.astype(np.uint8))
