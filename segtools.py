@@ -250,11 +250,15 @@ def _smooth_tumor(data, zooms):
     mask_final = mask_final & organ_mask.astype(np.uint8)
 
     result = data.copy()
-    # 기존 종양 → 배경 인접이면 배경, 아니면 신장
-    struct_adj = ndimage.generate_binary_structure(3, 1)
-    bg_adj = ndimage.binary_dilation((data == 0), structure=struct_adj)
-    result[tumor_mask & bg_adj] = 0   # 배경 인접 → 배경
-    result[tumor_mask & ~bg_adj] = 1  # 내부 → 신장
+    # 기존 종양 중 smoothed 결과에서 빠진 복셀 처리
+    lost = tumor_mask & ~(mask_final == 1)
+    if int(np.sum(lost)) > 0:
+        from scipy.ndimage import distance_transform_edt
+        bg_dist = distance_transform_edt(data != 0)
+        kid_dist = distance_transform_edt(data != 1)
+        use_bg = bg_dist <= kid_dist
+        result[lost & use_bg] = 0
+        result[lost & ~use_bg] = 1
     result[mask_final == 1] = 2       # smoothed 종양
 
     after = int(np.sum(result == 2))
@@ -303,11 +307,23 @@ def _smooth_cyst(data, zooms):
     mask_final = ndimage.binary_fill_holes(mask_final) & allowed
 
     result = data.copy()
-    # 기존 물혹 → 배경 인접이면 배경, 아니면 신장
-    struct_adj = ndimage.generate_binary_structure(3, 1)
-    bg_adj = ndimage.binary_dilation((data == 0), structure=struct_adj)
-    result[cyst_mask & bg_adj] = 0
-    result[cyst_mask & ~bg_adj] = 1
+    # 기존 물혹 중 smoothed 결과에서 빠진 복셀 처리
+    lost = cyst_mask & ~mask_final
+    if int(np.sum(lost)) > 0:
+        # 원본에서 물혹을 제외한 라벨 기준으로 nearest label 할당
+        from scipy.ndimage import distance_transform_edt
+        for lbl, lbl_name in [(0, "배경"), (1, "신장")]:
+            lbl_mask = (data == lbl)
+            if not np.any(lbl_mask):
+                continue
+            if lbl == 0:
+                bg_dist = distance_transform_edt(~lbl_mask)
+            else:
+                kid_dist = distance_transform_edt(~lbl_mask)
+        # 배경과 신장 중 가까운 쪽으로
+        use_bg = bg_dist <= kid_dist
+        result[lost & use_bg] = 0
+        result[lost & ~use_bg] = 1
     result[mask_final] = 3
 
     after = int(np.sum(result == 3))
