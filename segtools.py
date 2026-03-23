@@ -194,10 +194,26 @@ def func_remove_high_intensity(data, ct_data=None, **kwargs):
 
 
 # ──────────────────────────────────────────────
-# 기능 4: 종양 smoothing
+# 기능: Smoothing (종양 / 물혹 / 장기 전체 외곽)
 # ──────────────────────────────────────────────
 
-def func_smooth_tumor(data, zooms=None, **kwargs):
+def func_smooth(data, zooms=None, **kwargs):
+    """Smoothing 통합 — 대상 선택 후 실행."""
+    target = input_choice("  Smoothing 대상", [
+        "1: 종양(label 2)",
+        "2: 물혹(label 3)",
+        "3: 장기 전체 외곽(신장+종양+물혹)",
+    ])
+
+    if target == "1":
+        return _smooth_tumor(data, zooms)
+    elif target == "2":
+        return _smooth_cyst(data, zooms)
+    else:
+        return _smooth_organ(data, zooms)
+
+
+def _smooth_tumor(data, zooms):
     """종양 라벨 smoothing."""
     kidney_mask = (data == 1)
     tumor_mask = (data == 2)
@@ -246,12 +262,58 @@ def func_smooth_tumor(data, zooms=None, **kwargs):
     return result
 
 
-# ──────────────────────────────────────────────
-# 기능 5: 신장+종양 장기 외곽 smoothing
-# ──────────────────────────────────────────────
+def _smooth_cyst(data, zooms):
+    """물혹(label 3) 경계를 스무스하게 정리."""
+    cyst_mask = (data == 3)
+    kidney_mask = (data == 1)
+    before = int(np.sum(cyst_mask))
 
-def func_smooth_kidney(data, zooms=None, **kwargs):
-    """종양 유지, 신장+종양 장기 외곽 smoothing."""
+    if before == 0:
+        print("  물혹 라벨 없음")
+        return data
+
+    sigma = input_float("  Gaussian sigma mm (기본 1.0)", default=1.0)
+    close_iter = input_int("  Closing 반복 (기본 2)", default=2)
+    open_iter = input_int("  Opening 반복 (기본 1)", default=1)
+
+    # 물혹이 존재할 수 있는 영역: 기존 신장 + 물혹
+    allowed = kidney_mask | cyst_mask
+
+    mask = cyst_mask.astype(np.float64)
+    struct = ndimage.generate_binary_structure(3, 1)
+
+    if close_iter > 0:
+        mask = ndimage.binary_closing(mask, structure=struct, iterations=close_iter).astype(np.float64)
+    if open_iter > 0:
+        mask = ndimage.binary_opening(mask, structure=struct, iterations=open_iter).astype(np.float64)
+
+    if zooms is not None:
+        sigma_voxels = [sigma / float(z) for z in zooms]
+    else:
+        sigma_voxels = sigma
+
+    smoothed = ndimage.gaussian_filter(mask, sigma=sigma_voxels)
+    mask_final = (smoothed >= 0.5) & allowed
+
+    # 내부 구멍 채우기
+    mask_final = ndimage.binary_fill_holes(mask_final) & allowed
+
+    result = data.copy()
+    # 기존 물혹 → 신장으로 되돌린 뒤, smoothed 물혹 적용
+    result[cyst_mask] = 1
+    result[mask_final] = 3
+
+    after = int(np.sum(result == 3))
+    before_s = surface_ratio(cyst_mask.astype(np.uint8))
+    after_s = surface_ratio((result == 3).astype(np.uint8))
+    print(f"  Voxels: {before:,} → {after:,} ({(after - before) / max(before, 1) * 100:+.1f}%)")
+    print(f"  Surface: {before_s:.1f}% → {after_s:.1f}%")
+
+    return result
+
+
+def _smooth_organ(data, zooms):
+    """신장+종양+물혹 장기 전체 외곽 smoothing."""
     kidney_mask = (data == 1)
     tumor_mask = (data == 2)
     before_kidney = int(np.sum(kidney_mask))
@@ -317,43 +379,88 @@ def func_smooth_kidney(data, zooms=None, **kwargs):
 
 
 # ──────────────────────────────────────────────
-# 기능 6: Intensity 기반 경계 확장
+# 기능: Intensity 기반 경계 확장 (신장/종양/물혹)
 # ──────────────────────────────────────────────
 
-def func_expand_boundary(data, ct_data=None, **kwargs):
-    """특정 intensity 기준으로 경계 확장."""
+def func_expand(data, ct_data=None, **kwargs):
+    """Intensity 기반 경계 확장 — 대상 및 조건 선택."""
     if ct_data is None:
         print("  CT 이미지 없음 — 실행 불가")
         return data
 
-    target = input_choice("  확장 대상", ["1: 신장(label 1)", "2: 종양(label 2)"])
-    label = int(target)
-    name = {1: "신장", 2: "종양"}[label]
+    target = input_choice("  확장 대상", [
+        "1: 신장(label 1)",
+        "2: 종양(label 2)",
+        "3: 물혹(label 3)",
+    ])
 
-    threshold = input_float("  최소 intensity HU (기본 120)", default=120.0)
+    label = int(target)
+    name = {1: "신장", 2: "종양", 3: "물혹"}[label]
+    mask = (data == label)
+    before = int(np.sum(mask))
+
+    if before == 0:
+        print(f"  {name} 라벨 없음")
+        return data
+
+    # 확장 가능 영역: 신장은 배경만, 종양/물혹은 배경+신장
+    if label == 1:
+        expandable = (data == 0)
+        print("  확장 영역: 배경")
+    else:
+        expandable = (data == 0) | (data == 1)
+        print("  확장 영역: 배경 + 신장")
+
+    # intensity 통계 표시
+    vals = ct_data[mask]
+    val_mean = float(np.mean(vals))
+    val_std = float(np.std(vals))
+    print(f"  {name} intensity: {val_mean:.1f} ± {val_std:.1f} HU")
+
+    # intensity 조건 선택
+    mode = input_choice("  Intensity 조건", [
+        "1: 하한만 (≥ threshold)",
+        "2: 양방향 범위 (평균 ± tolerance)",
+    ])
+
+    if mode == "1":
+        threshold = input_float("  최소 intensity HU (기본 120)", default=120.0)
+        hu_filter = (ct_data >= threshold)
+        print(f"  조건: HU ≥ {threshold:.0f}")
+    else:
+        default_tol = round(max(val_std * 2, 15))
+        tolerance = input_float(
+            f"  허용 HU 범위 (평균 ± X, 기본 {default_tol})",
+            default=default_tol)
+        hu_lo = val_mean - tolerance
+        hu_hi = val_mean + tolerance
+        hu_filter = (ct_data >= hu_lo) & (ct_data <= hu_hi)
+        print(f"  조건: HU {hu_lo:.0f} ~ {hu_hi:.0f}")
+
     steps = input_int("  확장 횟수 (기본 5)", default=5)
 
-    mask = (data == label).astype(np.uint8)
+    expand_mask = mask.copy()
     struct = ndimage.generate_binary_structure(3, 1)
     total_added = 0
 
     for step in range(steps):
-        dilated = ndimage.binary_dilation(mask, structure=struct).astype(np.uint8)
-        candidates = (dilated == 1) & (mask == 0) & (data == 0)  # 배경만 확장
-        accepted = candidates & (ct_data >= threshold)
+        dilated = ndimage.binary_dilation(expand_mask, structure=struct)
+        candidates = dilated & ~expand_mask & expandable
+        accepted = candidates & hu_filter
         added = int(np.sum(accepted))
         total_added += added
 
         if added == 0:
+            print(f"    Step {step + 1}: 확장 가능 복셀 없음 — 종료")
             break
 
-        mask[accepted] = 1
+        expand_mask[accepted] = True
         print(f"    Step {step + 1}: +{added:,} voxels")
 
     result = data.copy()
-    new_voxels = (mask == 1) & (data != label)
+    new_voxels = expand_mask & ~mask
     result[new_voxels] = label
-    print(f"  {name} 확장 완료: +{total_added:,} voxels")
+    print(f"  {name} 확장 완료: {before:,} → {before + total_added:,} (+{total_added:,} voxels)")
 
     return result
 
@@ -537,25 +644,39 @@ def func_relabel_isolated_kidney(data, **kwargs):
 
 
 # ──────────────────────────────────────────────
-# 기능 10: 볼록 껍질 기반 물혹 라벨링
+# 기능: 볼록 껍질 기반 라벨링 (종양/물혹)
 # ──────────────────────────────────────────────
 
-def func_label_cyst(data, ct_data=None, zooms=None, **kwargs):
-    """시드 전체 복셀 → 3D 볼록 껍질 → 내부 전체 채움.
+def func_label_convex(data, ct_data=None, zooms=None, **kwargs):
+    """시드 전체 복셀 → 3D 볼록 껍질 → 내부 전체 채움."""
+    target = input_choice("  라벨링 대상", [
+        "1: 종양(label 2)",
+        "2: 물혹(label 3)",
+    ])
 
-    신장(label 1) 내부로만 제한하며, 종양(label 2)은 침범하지 않음.
-    """
+    if target == "1":
+        label = 2
+        name = "종양"
+        # 종양 시드: label 2 사용, 신장+종양 영역 내로 제한, 물혹 보호
+        seed_mask = (data == 2)
+        allowed_mask = (data == 1) | (data == 2)
+        protect_mask = (data == 3)
+    else:
+        label = 3
+        name = "물혹"
+        # 물혹 시드: label 3 사용, 신장+물혹 영역 내로 제한, 종양 보호
+        seed_mask = (data == 3)
+        allowed_mask = (data == 1) | (data == 3)
+        protect_mask = (data == 2)
 
-    seed_mask = (data == 3)
     n_seed = int(np.sum(seed_mask))
     if n_seed == 0:
-        print("  label 3 시드가 없습니다.")
-        print("  → 여러 평면(axial/sagittal/coronal)에서 물혹 영역을 label 3으로 칠해주세요.")
+        print(f"  {name} 시드(label {label})가 없습니다.")
+        print(f"  → 여러 평면(axial/sagittal/coronal)에서 {name} 영역을 label {label}로 칠해주세요.")
         return data
 
-    organ_mask = (data == 1) | (data == 3)
-    if int(np.sum(organ_mask)) == 0:
-        print("  신장 라벨 없음 — 실행 불가")
+    if int(np.sum(allowed_mask)) == 0:
+        print("  허용 영역(신장) 없음 — 실행 불가")
         return data
 
     # ── 1. 시드 전체 복셀 → 껍질 꼭짓점 ──
@@ -582,21 +703,20 @@ def func_label_cyst(data, ct_data=None, zooms=None, **kwargs):
     print(f"  내부 판정 중... ({len(test_points):,} voxels)")
     inside = delaunay.find_simplex(test_points) >= 0
 
-    cyst_mask = np.zeros(data.shape, dtype=bool)
-    cyst_mask[test_points[inside, 0], test_points[inside, 1], test_points[inside, 2]] = True
+    fill_mask = np.zeros(data.shape, dtype=bool)
+    fill_mask[test_points[inside, 0], test_points[inside, 1], test_points[inside, 2]] = True
 
     # 시드는 무조건 포함
-    cyst_mask = cyst_mask | seed_mask
+    fill_mask = fill_mask | seed_mask
 
-    # ── 4. 최종 제약: 신장 내부, 종양 보호 ──
-    cyst_mask = cyst_mask & organ_mask & ~(data == 2)
-    cyst_mask = cyst_mask | seed_mask
+    # ── 4. 최종 제약: 허용 영역 내, 보호 라벨 침범 방지 ──
+    fill_mask = (fill_mask & allowed_mask & ~protect_mask) | seed_mask
 
-    total = int(np.sum(cyst_mask))
+    total = int(np.sum(fill_mask))
     print(f"  결과: {n_seed:,} → {total:,} voxels (+{total - n_seed:,})")
 
     result = data.copy()
-    result[cyst_mask] = 3
+    result[fill_mask] = label
     return result
 
 
@@ -671,98 +791,73 @@ def func_remove_protrusion(data, **kwargs):
 
 
 # ──────────────────────────────────────────────
-# 기능 13: 물혹 smoothing
+# 기능: 경계 HU 트리밍 (신장(장기 외곽)/종양/물혹)
 # ──────────────────────────────────────────────
 
-def func_smooth_cyst(data, zooms=None, **kwargs):
-    """물혹(label 3) 경계를 스무스하게 정리."""
-    cyst_mask = (data == 3)
-    kidney_mask = (data == 1)
-    before = int(np.sum(cyst_mask))
-
-    if before == 0:
-        print("  물혹 라벨 없음")
-        return data
-
-    sigma = input_float("  Gaussian sigma mm (기본 1.0)", default=1.0)
-    close_iter = input_int("  Closing 반복 (기본 2)", default=2)
-    open_iter = input_int("  Opening 반복 (기본 1)", default=1)
-
-    # 물혹이 존재할 수 있는 영역: 기존 신장 + 물혹
-    allowed = kidney_mask | cyst_mask
-
-    mask = cyst_mask.astype(np.float64)
-    struct = ndimage.generate_binary_structure(3, 1)
-
-    if close_iter > 0:
-        mask = ndimage.binary_closing(mask, structure=struct, iterations=close_iter).astype(np.float64)
-    if open_iter > 0:
-        mask = ndimage.binary_opening(mask, structure=struct, iterations=open_iter).astype(np.float64)
-
-    if zooms is not None:
-        sigma_voxels = [sigma / float(z) for z in zooms]
-    else:
-        sigma_voxels = sigma
-
-    smoothed = ndimage.gaussian_filter(mask, sigma=sigma_voxels)
-    mask_final = (smoothed >= 0.5) & allowed
-
-    # 내부 구멍 채우기
-    mask_final = ndimage.binary_fill_holes(mask_final) & allowed
-
-    result = data.copy()
-    # 기존 물혹 → 신장으로 되돌린 뒤, smoothed 물혹 적용
-    result[cyst_mask] = 1
-    result[mask_final] = 3
-
-    after = int(np.sum(result == 3))
-    before_s = surface_ratio(cyst_mask.astype(np.uint8))
-    after_s = surface_ratio((result == 3).astype(np.uint8))
-    print(f"  Voxels: {before:,} → {after:,} ({(after - before) / max(before, 1) * 100:+.1f}%)")
-    print(f"  Surface: {before_s:.1f}% → {after_s:.1f}%")
-
-    return result
-
-
-# ──────────────────────────────────────────────
-# 기능 14: 물혹 경계 HU 트리밍
-# ──────────────────────────────────────────────
-
-def func_trim_cyst_boundary(data, ct_data=None, **kwargs):
-    """물혹 경계에서 HU 범위 밖 복셀을 바깥부터 반복 깎아냄."""
+def func_trim_boundary(data, ct_data=None, **kwargs):
+    """경계에서 HU 범위 밖 복셀을 바깥부터 반복 깎아냄."""
     if ct_data is None:
         print("  CT 이미지 없음 — 실행 불가")
         return data
 
-    cyst_mask = (data == 3)
-    before = int(np.sum(cyst_mask))
+    target = input_choice("  트리밍 대상", [
+        "1: 신장 — 장기 전체 외곽 (신장+종양+물혹)",
+        "2: 종양(label 2)",
+        "3: 물혹(label 3)",
+    ])
+
+    if target == "1":
+        return _trim_organ(data, ct_data)
+    elif target == "2":
+        return _trim_single(data, ct_data, label=2, name="종양")
+    else:
+        return _trim_single(data, ct_data, label=3, name="물혹")
+
+
+def _determine_removed_label(data, removed_mask):
+    """깎인 복셀 각각의 주변을 확인하여 라벨 결정.
+
+    배경(0)과 닿아있으면 배경으로, 아니면 신장(1)으로 변경.
+    """
+    struct = ndimage.generate_binary_structure(3, 1)
+    bg_mask = (data == 0)
+    bg_adj = ndimage.binary_dilation(bg_mask, structure=struct)
+    # 배경과 닿아있는 깎인 복셀 → 배경(0), 나머지 → 신장(1)
+    to_bg = removed_mask & bg_adj
+    to_kidney = removed_mask & ~bg_adj
+    return to_bg, to_kidney
+
+
+def _trim_single(data, ct_data, label, name):
+    """종양 또는 물혹 단일 라벨 트리밍."""
+    mask = (data == label)
+    before = int(np.sum(mask))
     if before == 0:
-        print("  물혹 라벨 없음")
+        print(f"  {name} 라벨 없음")
         return data
 
-    cyst_vals = ct_data[cyst_mask]
-    cyst_mean = float(np.mean(cyst_vals))
-    cyst_std = float(np.std(cyst_vals))
-    print(f"  물혹: {before:,} voxels, intensity {cyst_mean:.1f} ± {cyst_std:.1f} HU")
+    vals = ct_data[mask]
+    val_mean = float(np.mean(vals))
+    val_std = float(np.std(vals))
+    print(f"  {name}: {before:,} voxels, intensity {val_mean:.1f} ± {val_std:.1f} HU")
 
+    default_tol = round(max(val_std * 2, 15))
     tolerance = input_float(
-        f"  허용 HU 범위 (평균 ± X, 기본 {max(cyst_std * 2, 15):.0f})",
-        default=round(max(cyst_std * 2, 15)))
+        f"  허용 HU 범위 (평균 ± X, 기본 {default_tol})",
+        default=default_tol)
     max_iter = input_int("  최대 반복 (기본 1)", default=1)
 
-    hu_lo = cyst_mean - tolerance
-    hu_hi = cyst_mean + tolerance
+    hu_lo = val_mean - tolerance
+    hu_hi = val_mean + tolerance
     print(f"  HU 범위: {hu_lo:.0f} ~ {hu_hi:.0f}")
 
     hu_bad = (ct_data < hu_lo) | (ct_data > hu_hi)
     struct = ndimage.generate_binary_structure(3, 1)
-    trimmed = cyst_mask.copy()
+    trimmed = mask.copy()
 
     for i in range(max_iter):
-        # 현재 마스크의 표면 복셀
         eroded = ndimage.binary_erosion(trimmed, structure=struct)
         surface = trimmed & ~eroded
-        # 표면 중 HU 범위 밖 복셀 제거
         to_remove = surface & hu_bad
         removed = int(np.sum(to_remove))
         if removed == 0:
@@ -770,72 +865,76 @@ def func_trim_cyst_boundary(data, ct_data=None, **kwargs):
             break
         trimmed = trimmed & ~to_remove
 
+    removed_mask = mask & ~trimmed
     after = int(np.sum(trimmed))
     print(f"  트리밍: {before:,} → {after:,} (−{before - after:,} voxels)")
 
     result = data.copy()
-    result[cyst_mask & ~trimmed] = 1  # 깎인 부분은 신장으로
+    to_bg, to_kidney = _determine_removed_label(data, removed_mask)
+    result[to_bg] = 0
+    result[to_kidney] = 1
+    print(f"    → 배경으로: {int(np.sum(to_bg)):,}, 신장으로: {int(np.sum(to_kidney)):,}")
+
     return result
 
 
-# ──────────────────────────────────────────────
-# 기능 15: 물혹 경계 확장
-# ──────────────────────────────────────────────
-
-def func_expand_cyst(data, ct_data=None, **kwargs):
-    """물혹 경계를 HU 범위 내 복셀로 한 겹씩 확장."""
-    if ct_data is None:
-        print("  CT 이미지 없음 — 실행 불가")
-        return data
-
+def _trim_organ(data, ct_data):
+    """신장+종양+물혹 장기 전체 외곽 트리밍."""
+    kidney_mask = (data == 1)
+    tumor_mask = (data == 2)
     cyst_mask = (data == 3)
-    before = int(np.sum(cyst_mask))
+    organ_mask = kidney_mask | tumor_mask | cyst_mask
+    before = int(np.sum(organ_mask))
+
     if before == 0:
-        print("  물혹 라벨 없음")
+        print("  장기 라벨 없음")
         return data
 
-    cyst_vals = ct_data[cyst_mask]
-    cyst_mean = float(np.mean(cyst_vals))
-    cyst_std = float(np.std(cyst_vals))
-    print(f"  물혹: {before:,} voxels, intensity {cyst_mean:.1f} ± {cyst_std:.1f} HU")
+    vals = ct_data[organ_mask]
+    val_mean = float(np.mean(vals))
+    val_std = float(np.std(vals))
+    print(f"  장기 전체: {before:,} voxels, intensity {val_mean:.1f} ± {val_std:.1f} HU")
 
+    default_tol = round(max(val_std * 2, 15))
     tolerance = input_float(
-        f"  허용 HU 범위 (평균 ± X, 기본 {max(cyst_std * 2, 15):.0f})",
-        default=round(max(cyst_std * 2, 15)))
-    steps = input_int("  확장 횟수 (기본 5)", default=5)
+        f"  허용 HU 범위 (평균 ± X, 기본 {default_tol})",
+        default=default_tol)
+    max_iter = input_int("  최대 반복 (기본 1)", default=1)
 
-    hu_lo = cyst_mean - tolerance
-    hu_hi = cyst_mean + tolerance
+    hu_lo = val_mean - tolerance
+    hu_hi = val_mean + tolerance
     print(f"  HU 범위: {hu_lo:.0f} ~ {hu_hi:.0f}")
 
-    hu_good = (ct_data >= hu_lo) & (ct_data <= hu_hi)
+    hu_bad = (ct_data < hu_lo) | (ct_data > hu_hi)
     struct = ndimage.generate_binary_structure(3, 1)
-    mask = cyst_mask.copy()
-    total_added = 0
+    trimmed = organ_mask.copy()
 
-    for step in range(steps):
-        dilated = ndimage.binary_dilation(mask, structure=struct)
-        # 신장(1) 영역만 확장 대상 (종양/배경 침범 방지)
-        candidates = dilated & ~mask & (data == 1)
-        accepted = candidates & hu_good
-        added = int(np.sum(accepted))
-        total_added += added
-
-        if added == 0:
-            print(f"    Step {step + 1}: 확장 가능 복셀 없음 — 종료")
+    for i in range(max_iter):
+        eroded = ndimage.binary_erosion(trimmed, structure=struct)
+        surface = trimmed & ~eroded
+        # 장기 외곽만 깎음: 종양/물혹 내부는 보호
+        # 표면 중 내부 라벨(종양/물혹) 경계는 제외하고 외곽만 대상
+        to_remove = surface & hu_bad
+        removed = int(np.sum(to_remove))
+        if removed == 0:
+            print(f"  {i + 1}회 반복 후 완료")
             break
+        trimmed = trimmed & ~to_remove
 
-        mask[accepted] = True
-        print(f"    Step {step + 1}: +{added:,} voxels")
+    removed_mask = organ_mask & ~trimmed
+    after = int(np.sum(trimmed))
+    print(f"  트리밍: {before:,} → {after:,} (−{before - after:,} voxels)")
 
+    # 깎인 복셀은 모두 배경으로 (장기 외곽이므로)
     result = data.copy()
-    result[mask & ~cyst_mask] = 3
-    print(f"  물혹 확장 완료: {before:,} → {before + total_added:,} (+{total_added:,} voxels)")
+    result[removed_mask] = 0
+    print(f"    → 배경으로: {int(np.sum(removed_mask)):,}")
+
     return result
 
 
 # ──────────────────────────────────────────────
-# 기능 16: 세그멘테이션 합치기
+# 기능: 세그멘테이션 합치기
 # ──────────────────────────────────────────────
 
 def func_merge_segmentations(data, **kwargs):
@@ -872,6 +971,151 @@ def func_merge_segmentations(data, **kwargs):
 
 
 # ──────────────────────────────────────────────
+# 기능: Phase 비교 분석
+# ──────────────────────────────────────────────
+
+def func_compare_phases(phases):
+    """모든 phase의 세그멘테이션을 로드하여 비교 분석."""
+    phase_keys = sorted(phases.keys())
+    if len(phase_keys) < 2:
+        print("  비교할 phase가 2개 이상 필요합니다.")
+        return
+
+    # ── 1. 모든 phase 로드 ──
+    phase_data = {}
+    phase_ct = {}
+    for p in phase_keys:
+        seg_img = nib.load(phases[p]["seg"])
+        phase_data[p] = np.round(np.asanyarray(seg_img.dataobj)).astype(np.uint16)
+        img_path = phases[p]["img"]
+        if img_path and os.path.exists(img_path):
+            phase_ct[p] = np.asanyarray(nib.load(img_path).dataobj).astype(np.float32)
+        else:
+            phase_ct[p] = None
+
+    label_names = {0: "배경", 1: "신장", 2: "종양", 3: "물혹"}
+
+    # ── 2. Phase별 라벨 크기/비율 ──
+    print(f"\n{'='*60}")
+    print(f"  Phase별 라벨 크기 비교")
+    print(f"{'='*60}")
+
+    # 헤더
+    header = f"  {'라벨':<10}"
+    for p in phase_keys:
+        header += f"  {p:>12}"
+    header += f"  {'최대차이':>10}"
+    print(header)
+    print(f"  {'─'*10}" + f"  {'─'*12}" * len(phase_keys) + f"  {'─'*10}")
+
+    for label in [1, 2, 3]:
+        name = label_names[label]
+        counts = []
+        for p in phase_keys:
+            counts.append(int(np.sum(phase_data[p] == label)))
+
+        if all(c == 0 for c in counts):
+            continue
+
+        row = f"  {name:<10}"
+        for c in counts:
+            row += f"  {c:>12,}"
+
+        max_c = max(counts) if max(counts) > 0 else 1
+        min_c = min(counts)
+        diff_pct = (max_c - min_c) / max_c * 100
+        row += f"  {diff_pct:>9.1f}%"
+        print(row)
+
+    # 전체 장기
+    row = f"  {'장기전체':<10}"
+    organ_counts = []
+    for p in phase_keys:
+        c = int(np.sum(phase_data[p] > 0))
+        organ_counts.append(c)
+        row += f"  {c:>12,}"
+    max_c = max(organ_counts) if max(organ_counts) > 0 else 1
+    min_c = min(organ_counts)
+    diff_pct = (max_c - min_c) / max_c * 100
+    row += f"  {diff_pct:>9.1f}%"
+    print(row)
+
+    # ── 3. Phase 쌍별 Dice 계수 ──
+    print(f"\n{'='*60}")
+    print(f"  Phase 쌍별 Dice 계수")
+    print(f"{'='*60}")
+
+    from itertools import combinations
+    for p1, p2 in combinations(phase_keys, 2):
+        print(f"\n  [{p1} vs {p2}]")
+        for label in [1, 2, 3]:
+            name = label_names[label]
+            mask1 = (phase_data[p1] == label)
+            mask2 = (phase_data[p2] == label)
+            sum1 = int(np.sum(mask1))
+            sum2 = int(np.sum(mask2))
+
+            if sum1 == 0 and sum2 == 0:
+                continue
+
+            intersection = int(np.sum(mask1 & mask2))
+            dice = 2 * intersection / (sum1 + sum2) if (sum1 + sum2) > 0 else 0.0
+            print(f"    {name}: Dice={dice:.4f}  (겹침={intersection:,}, {p1}={sum1:,}, {p2}={sum2:,})")
+
+        # 장기 전체
+        mask1 = (phase_data[p1] > 0)
+        mask2 = (phase_data[p2] > 0)
+        intersection = int(np.sum(mask1 & mask2))
+        sum1 = int(np.sum(mask1))
+        sum2 = int(np.sum(mask2))
+        dice = 2 * intersection / (sum1 + sum2) if (sum1 + sum2) > 0 else 0.0
+        print(f"    장기전체: Dice={dice:.4f}  (겹침={intersection:,}, {p1}={sum1:,}, {p2}={sum2:,})")
+
+    # ── 4. 불일치 영역 슬라이스 분석 ──
+    print(f"\n{'='*60}")
+    print(f"  불일치 영역 슬라이스 분석 (axial 기준)")
+    print(f"{'='*60}")
+
+    for p1, p2 in combinations(phase_keys, 2):
+        print(f"\n  [{p1} vs {p2}]")
+        for label in [1, 2, 3]:
+            name = label_names[label]
+            mask1 = (phase_data[p1] == label)
+            mask2 = (phase_data[p2] == label)
+
+            if int(np.sum(mask1)) == 0 and int(np.sum(mask2)) == 0:
+                continue
+
+            # 슬라이스별 차이 계산 (axial = 마지막 축 기준이 아닌 첫 축 기준)
+            n_slices = mask1.shape[2]
+            diff_per_slice = np.zeros(n_slices)
+            for s in range(n_slices):
+                slice1 = mask1[:, :, s]
+                slice2 = mask2[:, :, s]
+                diff_per_slice[s] = int(np.sum(slice1 != slice2))
+
+            total_diff = int(np.sum(diff_per_slice > 0))
+            if total_diff == 0:
+                print(f"    {name}: 완전 일치")
+                continue
+
+            # 차이가 있는 슬라이스 범위
+            diff_slices = np.where(diff_per_slice > 0)[0]
+            # 상위 차이 슬라이스
+            top_slices = np.argsort(diff_per_slice)[::-1][:5]
+            top_slices = top_slices[diff_per_slice[top_slices] > 0]
+
+            print(f"    {name}: 불일치 슬라이스 {total_diff}개 (범위: {diff_slices[0]}~{diff_slices[-1]})")
+            print(f"      가장 큰 차이:")
+            for s in top_slices:
+                only1 = int(np.sum(mask1[:, :, s] & ~mask2[:, :, s]))
+                only2 = int(np.sum(mask2[:, :, s] & ~mask1[:, :, s]))
+                print(f"        slice {s}: {p1}에만 {only1:,}, {p2}에만 {only2:,} voxels")
+
+    print()
+
+
+# ──────────────────────────────────────────────
 # 메인 루프
 # ──────────────────────────────────────────────
 
@@ -880,18 +1124,16 @@ FUNCTIONS = {
     "2": ("고립 복셀 제거", func_remove_isolated),
     "3": ("저강도 제거 (intensity ≤ 0)", func_remove_low_intensity),
     "4": ("고강도 제거 (intensity ≥ threshold)", func_remove_high_intensity),
-    "5": ("종양 smoothing", func_smooth_tumor),
-    "6": ("신장+종양 장기 외곽 smoothing", func_smooth_kidney),
-    "7": ("Intensity 기반 경계 확장", func_expand_boundary),
-    "8": ("내부 구멍 채우기", func_fill_holes),
-    "9": ("고립 신장 → 종양 재라벨링", func_relabel_isolated_kidney),
-    "10": ("물혹 라벨링 — 볼록 껍질 기반", func_label_cyst),
-    "11": ("경계 계단 메꿈", func_fill_staircase),
-    "12": ("신장 돌출부 제거", func_remove_protrusion),
-    "13": ("물혹 smoothing", func_smooth_cyst),
-    "14": ("물혹 경계 HU 트리밍", func_trim_cyst_boundary),
-    "15": ("물혹 경계 확장", func_expand_cyst),
-    "16": ("세그멘테이션 합치기 (신장 + 종양/물혹)", func_merge_segmentations),
+    "5": ("Smoothing (종양/물혹/장기 전체 외곽)", func_smooth),
+    "6": ("경계 확장 (신장/종양/물혹)", func_expand),
+    "7": ("경계 축소 (신장(장기 외곽)/종양/물혹)", func_trim_boundary),
+    "8": ("경계 계단 메꿈", func_fill_staircase),
+    "9": ("신장 돌출부 제거", func_remove_protrusion),
+    "10": ("내부 구멍 채우기", func_fill_holes),
+    "11": ("고립 신장 → 종양 재라벨링", func_relabel_isolated_kidney),
+    "12": ("볼록 껍질 기반 라벨링 (종양/물혹)", func_label_convex),
+    "13": ("세그멘테이션 합치기 (신장 + 종양/물혹)", func_merge_segmentations),
+    "14": ("Phase 비교 분석", None),  # 특수 처리: 모든 phase 동시 로드
     "r": ("롤백 (직전 상태로 되돌리기)", None),  # 특수 처리
 }
 
@@ -960,6 +1202,11 @@ def main():
             continue
 
         func_name, func = FUNCTIONS[func_input]
+
+        # ── Phase 비교 분석 처리 ──
+        if func_input == "14":
+            func_compare_phases(phases)
+            continue
 
         # ── 롤백 처리 ──
         if func_input == "r":
