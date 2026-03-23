@@ -509,8 +509,8 @@ class CancelOperation(Exception):
 
 
 def _check_special(val):
-    """q/r/b 입력 시 예외 발생."""
-    if val.lower() in ("q", "b", "r"):
+    """q/r/b 및 한글 대응(ㅂ/ㄱ/ㅠ) 입력 시 예외 발생."""
+    if val.lower() in ("q", "b", "r", "ㅂ", "ㅠ", "ㄱ"):
         raise CancelOperation()
 
 
@@ -1301,7 +1301,7 @@ def main():
         print(f"  all: 모든 phase에 동일 작업 실행 Apply to all phases")
 
         phase_input = input("\n  Phase: ").strip()
-        if phase_input.upper() in ("Q", "QUIT", "EXIT"):
+        if phase_input.upper() in ("Q", "QUIT", "EXIT", "ㅂ"):
             print("종료.")
             break
 
@@ -1327,7 +1327,7 @@ def main():
         print(f"    b: 돌아가기 Back")
 
         func_input = input("\n  기능 Function: ").strip().lower()
-        if func_input == "b":
+        if func_input in ("b", "ㅠ"):
             continue
         if func_input not in FUNCTIONS:
             print("  → 유효한 기능 번호를 입력하세요")
@@ -1341,7 +1341,7 @@ def main():
             continue
 
         # ── 영역 지정 실행 처리 ──
-        if func_input == "m":
+        if func_input in ("m", "ㅡ"):
             # 영역 지정 가능한 기능 목록 (분석/비교/롤백/영역지정 자체 제외)
             region_funcs = {k: v for k, v in FUNCTIONS.items()
                            if k not in ("1", "14", "m", "r") and v[1] is not None}
@@ -1352,7 +1352,7 @@ def main():
             print(f"    b: 돌아가기 Back")
 
             rf_input = input("\n  기능 Function: ").strip().lower()
-            if rf_input == "b" or rf_input not in region_funcs:
+            if rf_input in ("b", "ㅠ") or rf_input not in region_funcs:
                 if rf_input != "b":
                     print("  → 유효한 기능 번호를 입력하세요")
                 continue
@@ -1416,9 +1416,9 @@ def main():
                     next_input = input(prompt).strip().lower()
                     if next_input == "":
                         break
-                    elif next_input == "q" and len(selected_phases) > 1:
+                    elif next_input in ("q", "ㅂ") and len(selected_phases) > 1:
                         break
-                    elif next_input == "r":
+                    elif next_input in ("r", "ㄱ"):
                         if phase in rollback_history and len(rollback_history[phase]) > 0:
                             prev_data, prev_desc, prev_img = rollback_history[phase][-1]
                             print(f"  [{phase} phase] 롤백: '{prev_desc}' 이전 상태로 되돌리기")
@@ -1431,12 +1431,12 @@ def main():
                     else:
                         valid = "enter / r / q" if len(selected_phases) > 1 else "enter / r"
                         print(f"    → {valid} 중 하나를 입력하세요")
-                if next_input == "q":
+                if next_input in ("q", "ㅂ"):
                     break
             continue
 
         # ── 롤백 처리 ──
-        if func_input == "r":
+        if func_input in ("r", "ㄱ"):
             for phase in selected_phases:
                 seg_path = phases[phase]["seg"]
                 if phase not in rollback_history or len(rollback_history[phase]) == 0:
@@ -1507,9 +1507,9 @@ def main():
                 next_input = input(prompt).strip().lower()
                 if next_input == "":
                     break
-                elif next_input == "q" and len(selected_phases) > 1:
+                elif next_input in ("q", "ㅂ") and len(selected_phases) > 1:
                     break
-                elif next_input == "r":
+                elif next_input in ("r", "ㄱ"):
                     if phase in rollback_history and len(rollback_history[phase]) > 0:
                         prev_data, prev_desc, prev_img = rollback_history[phase][-1]
                         print(f"  [{phase} phase] 롤백: '{prev_desc}' 이전 상태로 되돌리기")
@@ -1522,7 +1522,7 @@ def main():
                 else:
                     valid = "enter / r / q" if len(selected_phases) > 1 else "enter / r"
                     print(f"    → {valid} 중 하나를 입력하세요")
-            if next_input == "q":
+            if next_input in ("q", "ㅂ"):
                 break
 
 
