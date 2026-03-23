@@ -246,20 +246,21 @@ def _smooth_tumor(data, zooms):
 
     sigma_voxels = [sigma / float(z) for z in zooms]
     smoothed = ndimage.gaussian_filter(mask, sigma=sigma_voxels)
-    mask_final = (smoothed >= 0.5).astype(np.uint8)
-    mask_final = mask_final & organ_mask.astype(np.uint8)
+    mask_final = (smoothed >= 0.5)
 
     result = data.copy()
-    # 기존 종양 중 smoothed 결과에서 빠진 복셀 처리
-    lost = tumor_mask & ~(mask_final == 1)
+    # 기존 종양 중 smoothed 결과에서 빠진 복셀 → 원래 라벨 복원
+    lost = tumor_mask & ~mask_final
+    result[lost] = 0  # 일단 배경으로
+    # lost 중 신장에 둘러싸인 복셀만 신장으로
     if int(np.sum(lost)) > 0:
         from scipy.ndimage import distance_transform_edt
         bg_dist = distance_transform_edt(data != 0)
         kid_dist = distance_transform_edt(data != 1)
-        use_bg = bg_dist <= kid_dist
-        result[lost & use_bg] = 0
-        result[lost & ~use_bg] = 1
-    result[mask_final == 1] = 2       # smoothed 종양
+        result[lost & (kid_dist < bg_dist)] = 1
+    # smoothed 종양 적용 — 배경 확장 허용, 다른 라벨(물혹 등)은 보호
+    new_tumor = mask_final & (result != 3)
+    result[new_tumor] = 2
 
     after = int(np.sum(result == 2))
     before_s = surface_ratio(tumor_mask.astype(np.uint8))
@@ -743,59 +744,126 @@ def func_label_convex(data, ct_data=None, zooms=None, **kwargs):
 # ──────────────────────────────────────────────
 
 def func_fill_staircase(data, ct_data=None, **kwargs):
-    """신장+종양 경계의 계단식 울퉁불퉁함을 메꿈."""
+    """경계 계단 메꿈 — Closing 또는 슬라이스별 Convex Hull."""
     kidney_mask = (data == 1)
     tumor_mask = (data == 2)
-    organ_mask = (kidney_mask | tumor_mask)
+    cyst_mask = (data == 3)
+    full_organ = kidney_mask | tumor_mask | cyst_mask
 
-    before = int(np.sum(organ_mask))
+    before = int(np.sum(full_organ))
     if before == 0:
-        print("  신장/종양 라벨 없음")
+        print("  장기 라벨 없음 No organ labels")
         return data
 
-    iterations = input_int("  Closing 반복 iterations (기본 default 1)", default=1)
+    mode = input_choice("  메꿈 방식 Fill method", [
+        "1: Closing (오목한 틈새 채움 Fill concave gaps)",
+        "2: Convex Hull (볼록하게 채움 Fill convex per slice)",
+    ])
+
     threshold = input_float("  최소 intensity HU Min intensity (기본 default 120)", default=120.0)
 
-    # 물혹 포함하여 장기 전체로 closing
-    cyst_mask = (data == 3)
-    full_organ = organ_mask | cyst_mask
+    if mode == "1":
+        return _fill_staircase_closing(data, ct_data, full_organ, threshold)
+    else:
+        return _fill_staircase_convex(data, ct_data, full_organ, threshold)
 
-    # 26-connectivity: 대각 방향 포함하여 계단 틈새를 채움
+
+def _fill_staircase_closing(data, ct_data, full_organ, threshold):
+    """Closing 기반 오목한 틈새 채움."""
+    iterations = input_int("  Closing 반복 iterations (기본 default 1)", default=1)
+
     struct = ndimage.generate_binary_structure(3, 3)
     closed = ndimage.binary_closing(full_organ, structure=struct, iterations=iterations)
 
-    # 새로 채워진 부분만 추출
     new_voxels = closed & ~full_organ
-    # HU 기준값 이상인 복셀만 허용
     if ct_data is not None:
         new_voxels = new_voxels & (ct_data >= threshold)
 
     result = data.copy()
-
-    # 가장 가까운 원래 라벨로 채움
     if int(np.sum(new_voxels)) > 0:
-        from scipy.ndimage import distance_transform_edt
-        labeled_data = data.copy()
-        labeled_data[~full_organ] = 0
-        # 각 라벨별 거리 계산, 가장 가까운 라벨 할당
-        min_dist = np.full(data.shape, np.inf)
-        nearest_label = np.zeros(data.shape, dtype=np.uint16)
-        for lbl in [1, 2, 3]:
-            lbl_mask = (data == lbl)
-            if not np.any(lbl_mask):
-                continue
-            dist = distance_transform_edt(~lbl_mask)
-            closer = dist < min_dist
-            min_dist[closer] = dist[closer]
-            nearest_label[closer] = lbl
-        result[new_voxels] = nearest_label[new_voxels]
+        result = _assign_nearest_label(data, result, new_voxels)
 
     added = int(np.sum(new_voxels))
-    # 라벨별 카운트
     added_kidney = int(np.sum(new_voxels & (result == 1)))
     added_tumor = int(np.sum(new_voxels & (result == 2)))
     added_cyst = int(np.sum(new_voxels & (result == 3)))
-    print(f"  경계 메꿈: +{added:,} voxels (신장 {added_kidney:,}, 종양 {added_tumor:,}, 물혹 {added_cyst:,}, HU ≥ {threshold:.0f})")
+    print(f"  Closing 메꿈: +{added:,} voxels (신장 {added_kidney:,}, 종양 {added_tumor:,}, 물혹 {added_cyst:,}, HU ≥ {threshold:.0f})")
+    return result
+
+
+def _fill_staircase_convex(data, ct_data, full_organ, threshold):
+    """슬라이스별 2D Convex Hull로 바깥쪽 계단을 볼록하게 채움."""
+    axis = input_choice("  슬라이스 축 Slice axis", [
+        f"0: axis 0 (shape={data.shape[0]})",
+        f"1: axis 1 (shape={data.shape[1]})",
+        f"2: axis 2 (shape={data.shape[2]})",
+    ])
+    axis = int(axis)
+
+    convex_organ = np.zeros_like(full_organ, dtype=bool)
+
+    n_slices = data.shape[axis]
+    filled_slices = 0
+
+    for i in range(n_slices):
+        slicing = [slice(None)] * 3
+        slicing[axis] = i
+        sl = tuple(slicing)
+
+        slice_mask = full_organ[sl]
+        if not np.any(slice_mask):
+            continue
+
+        coords = np.argwhere(slice_mask)
+        if len(coords) < 3:
+            convex_organ[sl] = slice_mask
+            continue
+
+        try:
+            hull = ConvexHull(coords)
+            hull_path = Delaunay(coords[hull.vertices])
+            # 슬라이스 전체 좌표에서 hull 내부 판정
+            all_coords = np.argwhere(np.ones(slice_mask.shape, dtype=bool))
+            inside = hull_path.find_simplex(all_coords) >= 0
+            hull_mask = np.zeros(slice_mask.shape, dtype=bool)
+            hull_mask[all_coords[inside, 0], all_coords[inside, 1]] = True
+            convex_organ[sl] = hull_mask
+            if np.any(hull_mask & ~slice_mask):
+                filled_slices += 1
+        except Exception:
+            convex_organ[sl] = slice_mask
+
+    new_voxels = convex_organ & ~full_organ
+    if ct_data is not None:
+        new_voxels = new_voxels & (ct_data >= threshold)
+
+    result = data.copy()
+    if int(np.sum(new_voxels)) > 0:
+        result = _assign_nearest_label(data, result, new_voxels)
+
+    added = int(np.sum(new_voxels))
+    added_kidney = int(np.sum(new_voxels & (result == 1)))
+    added_tumor = int(np.sum(new_voxels & (result == 2)))
+    added_cyst = int(np.sum(new_voxels & (result == 3)))
+    print(f"  Convex Hull 메꿈: +{added:,} voxels (신장 {added_kidney:,}, 종양 {added_tumor:,}, 물혹 {added_cyst:,})")
+    print(f"  변경된 슬라이스: {filled_slices}개, HU ≥ {threshold:.0f}")
+    return result
+
+
+def _assign_nearest_label(data, result, new_voxels):
+    """새 복셀에 가장 가까운 기존 라벨 할당."""
+    from scipy.ndimage import distance_transform_edt
+    min_dist = np.full(data.shape, np.inf)
+    nearest_label = np.zeros(data.shape, dtype=np.uint16)
+    for lbl in [1, 2, 3]:
+        lbl_mask = (data == lbl)
+        if not np.any(lbl_mask):
+            continue
+        dist = distance_transform_edt(~lbl_mask)
+        closer = dist < min_dist
+        min_dist[closer] = dist[closer]
+        nearest_label[closer] = lbl
+    result[new_voxels] = nearest_label[new_voxels]
     return result
 
 
