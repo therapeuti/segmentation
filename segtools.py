@@ -740,20 +740,46 @@ def func_fill_staircase(data, ct_data=None, **kwargs):
     iterations = input_int("  Closing 반복 iterations (기본 default 1)", default=1)
     threshold = input_float("  최소 intensity HU Min intensity (기본 default 120)", default=120.0)
 
+    # 물혹 포함하여 장기 전체로 closing
+    cyst_mask = (data == 3)
+    full_organ = organ_mask | cyst_mask
+
     # 26-connectivity: 대각 방향 포함하여 계단 틈새를 채움
     struct = ndimage.generate_binary_structure(3, 3)
-    closed = ndimage.binary_closing(organ_mask, structure=struct, iterations=iterations)
+    closed = ndimage.binary_closing(full_organ, structure=struct, iterations=iterations)
 
-    # 기존 복셀은 유지, 새로 채워진 부분만 신장으로 추가 (종양/물혹 보호)
-    new_voxels = closed & ~organ_mask & (data != 2) & (data != 3)
+    # 새로 채워진 부분만 추출
+    new_voxels = closed & ~full_organ
     # HU 기준값 이상인 복셀만 허용
     if ct_data is not None:
         new_voxels = new_voxels & (ct_data >= threshold)
+
     result = data.copy()
-    result[new_voxels] = 1
+
+    # 가장 가까운 원래 라벨로 채움
+    if int(np.sum(new_voxels)) > 0:
+        from scipy.ndimage import distance_transform_edt
+        labeled_data = data.copy()
+        labeled_data[~full_organ] = 0
+        # 각 라벨별 거리 계산, 가장 가까운 라벨 할당
+        min_dist = np.full(data.shape, np.inf)
+        nearest_label = np.zeros(data.shape, dtype=np.uint16)
+        for lbl in [1, 2, 3]:
+            lbl_mask = (data == lbl)
+            if not np.any(lbl_mask):
+                continue
+            dist = distance_transform_edt(~lbl_mask)
+            closer = dist < min_dist
+            min_dist[closer] = dist[closer]
+            nearest_label[closer] = lbl
+        result[new_voxels] = nearest_label[new_voxels]
 
     added = int(np.sum(new_voxels))
-    print(f"  경계 메꿈: +{added:,} voxels (신장으로 라벨링, HU ≥ {threshold:.0f})")
+    # 라벨별 카운트
+    added_kidney = int(np.sum(new_voxels & (result == 1)))
+    added_tumor = int(np.sum(new_voxels & (result == 2)))
+    added_cyst = int(np.sum(new_voxels & (result == 3)))
+    print(f"  경계 메꿈: +{added:,} voxels (신장 {added_kidney:,}, 종양 {added_tumor:,}, 물혹 {added_cyst:,}, HU ≥ {threshold:.0f})")
     return result
 
 
