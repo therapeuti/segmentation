@@ -500,23 +500,18 @@ def func_analyze(data, ct_data=None, **kwargs):
 class CancelOperation(Exception):
     """현재 기능 취소."""
 
-class RollbackRequest(Exception):
-    """직전 상태로 롤백 요청."""
-
 
 def _check_special(val):
-    """q/r 입력 시 예외 발생."""
-    if val.lower() == "q":
+    """q/r/b 입력 시 예외 발생."""
+    if val.lower() in ("q", "b", "r"):
         raise CancelOperation()
-    if val.lower() == "r":
-        raise RollbackRequest()
 
 
 def input_choice(prompt, options):
     """선택지 입력."""
     for opt in options:
         print(f"    {opt}")
-    print(f"    q: 취소  r: 롤백")
+    print(f"    b: 돌아가기")
     while True:
         val = input(f"  {prompt}: ").strip()
         _check_special(val)
@@ -527,7 +522,7 @@ def input_choice(prompt, options):
 
 
 def input_int(prompt, default):
-    val = input(f"  {prompt} (q:취소 r:롤백): ").strip()
+    val = input(f"  {prompt} (b:돌아가기): ").strip()
     _check_special(val)
     if val == "":
         return default
@@ -538,7 +533,7 @@ def input_int(prompt, default):
 
 
 def input_float(prompt, default):
-    val = input(f"  {prompt} (q:취소 r:롤백): ").strip()
+    val = input(f"  {prompt} (b:돌아가기): ").strip()
     _check_special(val)
     if val == "":
         return default
@@ -1265,17 +1260,6 @@ def main():
                 result = func(data, ct_data=ct_data, zooms=zooms)
             except CancelOperation:
                 print("\n  취소됨.")
-                continue
-            except RollbackRequest:
-                # 롤백 실행
-                if phase not in rollback_history or len(rollback_history[phase]) == 0:
-                    print(f"\n  [{phase} phase] 롤백 히스토리 없음")
-                    continue
-                prev_data, prev_desc, prev_img = rollback_history[phase][-1]
-                print(f"\n  [{phase} phase] 롤백: '{prev_desc}' 이전 상태로 되돌리기")
-                save_result(seg_path, prev_data, prev_img)
-                rollback_history[phase].pop()
-                print(f"  남은 히스토리: {len(rollback_history[phase])}단계")
                 continue
 
             # 변경 확인
