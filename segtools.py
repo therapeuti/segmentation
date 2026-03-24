@@ -1348,11 +1348,13 @@ def build_region_mask(shape, affine):
 
 
 def apply_with_region(func, data, region_mask, **kwargs):
-    """영역 지정 마스크 적용: 영역 안에서만 기능 실행, 밖은 원본 유지."""
+    """영역 지정 마스크 적용: 전체 데이터로 실행 후 영역 안 변경만 반영."""
     result = func(data, **kwargs)
-    # 영역 밖은 원본으로 복원
+    # 변경된 복셀 중 영역 안 + 영역 경계 1복셀 확장 범위만 반영
+    struct = ndimage.generate_binary_structure(3, 1)
+    expanded_region = ndimage.binary_dilation(region_mask, structure=struct, iterations=1)
     final = data.copy()
-    final[region_mask] = result[region_mask]
+    final[expanded_region] = result[expanded_region]
     return final
 
 
