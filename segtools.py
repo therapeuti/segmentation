@@ -690,30 +690,83 @@ def func_label_convex(data, ct_data=None, zooms=None, **kwargs):
         print(f"  → 여러 평면(axial/sagittal/coronal)에서 {name} 영역을 label {label}로 칠해주세요.")
         return data
 
+    # ── Component 분리 및 선택 ──
+    labeled_arr, n_comp = ndimage.label(seed_mask)
+    if n_comp >= 2:
+        comp_info = []
+        for ci in range(1, n_comp + 1):
+            comp_mask = (labeled_arr == ci)
+            comp_size = int(np.sum(comp_mask))
+            comp_coords = np.argwhere(comp_mask)
+            slices_range = f"slice {comp_coords[:, 0].min()}~{comp_coords[:, 0].max()}"
+            comp_info.append((ci, comp_size, slices_range, comp_mask))
+
+        comp_info.sort(key=lambda x: -x[1])  # 크기 순 정렬
+
+        print(f"\n  {name} component {n_comp}개 발견:")
+        for idx, (ci, sz, sr, _) in enumerate(comp_info):
+            print(f"    {idx + 1}: 크기 size {sz:,} voxels ({sr})")
+
+        options = [f"a: 전체 각각 자동 처리 Process all individually"]
+        options += [f"{idx + 1}: component {idx + 1} ({comp_info[idx][1]:,} voxels)" for idx in range(len(comp_info))]
+        sel = input_choice("  처리할 component Select component(s) (쉼표로 복수 선택 comma-separated)", options)
+
+        if sel.lower() == 'a':
+            selected_masks = [(f"component {idx+1}", ci[3]) for idx, ci in enumerate(comp_info)]
+        else:
+            indices = [int(s.strip()) - 1 for s in sel.split(",") if s.strip().isdigit()]
+            indices = [i for i in indices if 0 <= i < len(comp_info)]
+            if not indices:
+                print("  유효한 선택 없음 No valid selection")
+                return data
+            selected_masks = [(f"component {i+1}", comp_info[i][3]) for i in indices]
+    else:
+        selected_masks = [("전체 all", seed_mask)]
+
+    # ── 방식 선택 (한 번만) ──
     method = input_choice("  방식 Method", [
         "1: 3D ConvexHull (시드가 여러 축에 분포된 경우 When seeds span multiple axes)",
         "2: 슬라이스별 2D ConvexHull + 보간 Slice-by-slice 2D + interpolation",
     ])
 
-    if method == "1":
-        fill_mask = _label_convex_3d(data, seed_mask, n_seed)
-    else:
-        fill_mask = _label_convex_2d(data, seed_mask, n_seed)
+    # 2D 방식이면 축도 한 번만 선택
+    slice_axis = None
+    if method == "2":
+        axis_sel = input_choice("  슬라이스 축 Slice axis", [
+            f"0: axis 0 (shape={data.shape[0]})",
+            f"1: axis 1 (shape={data.shape[1]})",
+            f"2: axis 2 (shape={data.shape[2]})",
+        ])
+        slice_axis = int(axis_sel)
 
-    if fill_mask is None:
-        return data
-
-    # 시드는 무조건 포함
-    fill_mask = fill_mask | seed_mask
-
-    # 보호 라벨 침범 방지 ──
-    fill_mask = (fill_mask & ~protect_mask) | seed_mask
-
-    total = int(np.sum(fill_mask))
-    print(f"  결과: {n_seed:,} → {total:,} voxels (+{total - n_seed:,})")
-
+    # ── 각 component별 처리 ──
     result = data.copy()
-    result[fill_mask] = label
+    total_added = 0
+
+    for comp_name, comp_seed in selected_masks:
+        comp_n = int(np.sum(comp_seed))
+        print(f"\n  [{comp_name}] 시드 seeds: {comp_n:,} voxels")
+
+        if method == "1":
+            fill_mask = _label_convex_3d(data, comp_seed, comp_n)
+        else:
+            fill_mask = _label_convex_2d(data, comp_seed, comp_n, axis=slice_axis)
+
+        if fill_mask is None:
+            print(f"  [{comp_name}] 건너뜀 skipped")
+            continue
+
+        # 시드 포함 + 보호 라벨 침범 방지
+        fill_mask = fill_mask | comp_seed
+        fill_mask = (fill_mask & ~protect_mask) | comp_seed
+
+        added = int(np.sum(fill_mask)) - comp_n
+        total_added += added
+        print(f"  [{comp_name}] {comp_n:,} → {comp_n + added:,} voxels (+{added:,})")
+
+        result[fill_mask] = label
+
+    print(f"\n  총 결과 Total: {n_seed:,} → {n_seed + total_added:,} voxels (+{total_added:,})")
     return result
 
 
@@ -749,14 +802,15 @@ def _label_convex_3d(data, seed_mask, n_seed):
     return fill_mask
 
 
-def _label_convex_2d(data, seed_mask, n_seed):
+def _label_convex_2d(data, seed_mask, n_seed, axis=None):
     """슬라이스별 2D ConvexHull + 슬라이스 간 보간."""
-    axis = input_choice("  슬라이스 축 Slice axis", [
-        f"0: axis 0 (shape={data.shape[0]})",
-        f"1: axis 1 (shape={data.shape[1]})",
-        f"2: axis 2 (shape={data.shape[2]})",
-    ])
-    axis = int(axis)
+    if axis is None:
+        axis = input_choice("  슬라이스 축 Slice axis", [
+            f"0: axis 0 (shape={data.shape[0]})",
+            f"1: axis 1 (shape={data.shape[1]})",
+            f"2: axis 2 (shape={data.shape[2]})",
+        ])
+        axis = int(axis)
 
     # 시드가 있는 슬라이스 찾기
     seed_slices = []

@@ -302,6 +302,26 @@ Generates a Convex Hull from seed voxels pre-painted in an image viewer, then fi
 
 All background/kidney voxels inside the hull are filled. Only the protected label is preserved.
 
+**Step 1.5 — Component Selection (when 2+ components exist):**
+
+If seeds are split into multiple disconnected components, a list is displayed:
+
+```
+Cyst component 3 found:
+  1: size 1,234 voxels (slice 45~78)
+  2: size 567 voxels (slice 90~110)
+  3: size 89 voxels (slice 120~125)
+
+Select:
+  a: Process all individually
+  1,2,3: Select by number (comma-separated for multiple)
+```
+
+- Enter `a`: Each component gets its own independent convex hull
+- Enter numbers: Only selected components are processed (e.g., `1,3` for 1st and 3rd)
+
+This step is skipped when there is only 1 component.
+
 **Step 2 — Method Selection:**
 
 | Input | Method | Best For |
