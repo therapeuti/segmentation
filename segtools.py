@@ -386,12 +386,38 @@ def _smooth_organ(data, zooms):
     result[kidney_mask] = 0
     result[tumor_mask] = 0
     result[cyst_mask] = 0
-    final_tumor = tumor_mask & (smoothed_organ == 1)
-    final_cyst = cyst_mask & (smoothed_organ == 1)
-    final_kidney = (smoothed_organ == 1) & ~final_tumor & ~final_cyst
+
+    smoothed_mask = (smoothed_organ == 1)
+
+    # 기존 라벨 유지: 원래 종양/물혹이었고 smoothed에도 포함된 복셀
+    final_tumor = tumor_mask & smoothed_mask
+    final_cyst = cyst_mask & smoothed_mask
+
+    # 새로 확장된 복셀: smoothed에는 포함되지만 원래 장기가 아닌 복셀
+    existing_organ = kidney_mask | tumor_mask | cyst_mask
+    new_voxels = smoothed_mask & ~existing_organ
+
+    # 새 복셀은 가장 가까운 원래 라벨로 할당
+    from scipy.ndimage import distance_transform_edt
+    new_labels = np.ones(data.shape, dtype=np.uint16)  # 기본 신장
+    if int(np.sum(new_voxels)) > 0:
+        min_dist = np.full(data.shape, np.inf)
+        for lbl, lbl_mask in [(1, kidney_mask), (2, tumor_mask), (3, cyst_mask)]:
+            if not np.any(lbl_mask):
+                continue
+            dist = distance_transform_edt(~lbl_mask)
+            closer = dist < min_dist
+            min_dist[closer] = dist[closer]
+            new_labels[closer] = lbl
+
+    # 결과 조합
+    final_kidney = (smoothed_mask & (kidney_mask | (new_voxels & (new_labels == 1)))) & ~final_tumor & ~final_cyst
+    final_new_tumor = new_voxels & (new_labels == 2)
+    final_new_cyst = new_voxels & (new_labels == 3)
+
     result[final_kidney] = 1
-    result[final_tumor] = 2
-    result[final_cyst] = 3
+    result[final_tumor | final_new_tumor] = 2
+    result[final_cyst | final_new_cyst] = 3
 
     after_kidney = int(np.sum(result == 1))
     before_s = surface_ratio(organ_mask)
