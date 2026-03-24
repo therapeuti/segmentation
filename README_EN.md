@@ -289,20 +289,35 @@ Used to correct cases where tumor was mistakenly labeled as kidney.
 
 ### Function 12: Convex Hull Labeling
 
-Generates a 3D Convex Hull from seed voxels pre-painted in an image viewer, then fills the interior.
+Generates a Convex Hull from seed voxels pre-painted in an image viewer, then fills the interior.
 
-**Preparation:** Use an image viewer (e.g., ITK-SNAP) to paint seeds — label 2 for tumor, label 3 for cyst — across multiple planes (axial/sagittal/coronal).
+**Preparation:** Use an image viewer (e.g., 3D Slicer, ITK-SNAP) to paint seeds — label 2 for tumor, label 3 for cyst.
 
 **Step 1 — Target Selection:**
 
-| Input | Target | Seed Label | Allowed Region | Protected Label |
-|-------|--------|-----------|----------------|-----------------|
-| `1` | Tumor (label 2) | label 2 | Kidney + Tumor | Cyst (3) protected |
-| `2` | Cyst (label 3) | label 3 | Kidney + Cyst | Tumor (2) protected |
+| Input | Target | Seed Label | Protected Label |
+|-------|--------|-----------|-----------------|
+| `1` | Tumor (label 2) | label 2 | Cyst (3) protected |
+| `2` | Cyst (label 3) | label 3 | Tumor (2) protected |
 
-**No additional parameters** — Convex Hull computation and filling runs automatically after selection.
+All background/kidney voxels inside the hull are filled. Only the protected label is preserved.
 
-**Note:** If seeds exist on only one plane, the convex hull will be degenerate and fail. Always paint seeds across multiple planes.
+**Step 2 — Method Selection:**
+
+| Input | Method | Best For |
+|-------|--------|----------|
+| `1` | 3D ConvexHull | Seeds painted across multiple axes (axial/sagittal/coronal). Builds a 3D convex hull |
+| `2` | Slice-by-slice 2D ConvexHull + interpolation | Seeds painted along a single axis across multiple slices. Builds 2D hulls per slice and interpolates between them |
+
+**2D method additional input:**
+
+| Parameter | Description |
+|-----------|-------------|
+| Slice axis | Select the axis along which seeds were painted (axis 0 / 1 / 2) |
+
+**Tips:**
+- 3D method: Seeds must be well-distributed across multiple axes. If seeds lie on a single plane, the hull degenerates and produces 0 results
+- 2D method: Requires at least 2 seed slices for interpolation to work. Even widely spaced slices are automatically filled between
 
 ---
 
