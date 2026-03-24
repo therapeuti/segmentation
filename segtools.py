@@ -676,17 +676,13 @@ def func_label_convex(data, ct_data=None, zooms=None, **kwargs):
     if target == "1":
         label = 2
         name = "종양"
-        # 종양 시드: label 2 사용, 신장+종양 영역 내로 제한, 물혹 보호
         seed_mask = (data == 2)
-        allowed_mask = (data == 1) | (data == 2)
-        protect_mask = (data == 3)
+        protect_mask = (data == 3)  # 물혹 보호
     else:
         label = 3
         name = "물혹"
-        # 물혹 시드: label 3 사용, 신장+물혹 영역 내로 제한, 종양 보호
         seed_mask = (data == 3)
-        allowed_mask = (data == 1) | (data == 3)
-        protect_mask = (data == 2)
+        protect_mask = (data == 2)  # 종양 보호
 
     n_seed = int(np.sum(seed_mask))
     if n_seed == 0:
@@ -694,8 +690,8 @@ def func_label_convex(data, ct_data=None, zooms=None, **kwargs):
         print(f"  → 여러 평면(axial/sagittal/coronal)에서 {name} 영역을 label {label}로 칠해주세요.")
         return data
 
-    if int(np.sum(allowed_mask)) == 0:
-        print("  허용 영역(신장) 없음 — 실행 불가")
+    if n_seed < 4:
+        print(f"  시드가 4개 미만({n_seed})이면 볼록 껍질을 만들 수 없습니다.")
         return data
 
     # ── 1. 시드 전체 복셀 → 껍질 꼭짓점 ──
@@ -728,8 +724,8 @@ def func_label_convex(data, ct_data=None, zooms=None, **kwargs):
     # 시드는 무조건 포함
     fill_mask = fill_mask | seed_mask
 
-    # ── 4. 최종 제약: 허용 영역 내, 보호 라벨 침범 방지 ──
-    fill_mask = (fill_mask & allowed_mask & ~protect_mask) | seed_mask
+    # ── 4. 최종 제약: 보호 라벨 침범 방지 ──
+    fill_mask = (fill_mask & ~protect_mask) | seed_mask
 
     total = int(np.sum(fill_mask))
     print(f"  결과: {n_seed:,} → {total:,} voxels (+{total - n_seed:,})")
