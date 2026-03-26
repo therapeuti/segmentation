@@ -223,13 +223,20 @@ Trims surface voxels that fall outside the HU range, working inward from the out
 | `2` | Tumor (label 2) | Adjacent to background → background (0), otherwise → kidney (1) |
 | `3` | Cyst (label 3) | Adjacent to background → background (0), otherwise → kidney (1) |
 
-After selection, the target's intensity statistics (mean ± std HU) are displayed automatically.
+After selection, the target's intensity statistics (mean ± std, min, max HU) are displayed automatically.
 
-**Step 2 — Parameter Input:**
+**Step 2 — Intensity Condition:**
+
+| Input | Condition | Description |
+|-------|-----------|-------------|
+| `1` | Range | Remove outside mean ± tolerance (default: max(std×2, 15)) |
+| `2` | Lower bound | Remove HU < threshold (default: 0) |
+| `3` | Upper bound | Remove HU > threshold (default: 400) |
+
+**Step 3 — Iterations:**
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| HU range (mean ± X) | Surface voxels outside this range are trimmed | max(std×2, 15) |
 | Max iterations | Number of surface layers to trim | 1 |
 
 ---

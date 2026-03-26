@@ -1101,6 +1101,40 @@ def _determine_removed_label(data, removed_mask):
     return to_bg, to_kidney
 
 
+def _build_trim_condition(ct_data, vals, name=""):
+    """트리밍 intensity 조건 생성 (양방향/하한/상한 선택)."""
+    val_mean = float(np.mean(vals))
+    val_std = float(np.std(vals))
+    print(f"  {name}: intensity {val_mean:.1f} ± {val_std:.1f} HU "
+          f"(min={float(np.min(vals)):.0f}, max={float(np.max(vals)):.0f})")
+
+    mode = input_choice("  Intensity 조건 Condition", [
+        "1: 양방향 범위 Range (mean ± tolerance)",
+        "2: 하한 기준 Lower bound (HU < threshold 제거 remove)",
+        "3: 상한 기준 Upper bound (HU > threshold 제거 remove)",
+    ])
+
+    if mode == "1":
+        default_tol = round(max(val_std * 2, 15))
+        tolerance = input_float(
+            f"  허용 HU 범위 HU range (mean ± X, 기본 default {default_tol})",
+            default=default_tol)
+        hu_lo = val_mean - tolerance
+        hu_hi = val_mean + tolerance
+        print(f"  HU 범위 Range: {hu_lo:.0f} ~ {hu_hi:.0f}")
+        hu_bad = (ct_data < hu_lo) | (ct_data > hu_hi)
+    elif mode == "2":
+        threshold = input_float(f"  하한 HU Lower bound (기본 default 0)", default=0)
+        print(f"  HU < {threshold:.0f} 제거 remove")
+        hu_bad = (ct_data < threshold)
+    else:
+        threshold = input_float(f"  상한 HU Upper bound (기본 default 400)", default=400)
+        print(f"  HU > {threshold:.0f} 제거 remove")
+        hu_bad = (ct_data > threshold)
+
+    return hu_bad
+
+
 def _trim_single(data, ct_data, label, name):
     """종양 또는 물혹 단일 라벨 트리밍."""
     mask = (data == label)
@@ -1110,21 +1144,8 @@ def _trim_single(data, ct_data, label, name):
         return data
 
     vals = ct_data[mask]
-    val_mean = float(np.mean(vals))
-    val_std = float(np.std(vals))
-    print(f"  {name}: {before:,} voxels, intensity {val_mean:.1f} ± {val_std:.1f} HU")
-
-    default_tol = round(max(val_std * 2, 15))
-    tolerance = input_float(
-        f"  허용 HU 범위 HU range (mean ± X, 기본 default {default_tol})",
-        default=default_tol)
+    hu_bad = _build_trim_condition(ct_data, vals, f"{name} {before:,} voxels")
     max_iter = input_int("  최대 반복 Max iterations (기본 default 1)", default=1)
-
-    hu_lo = val_mean - tolerance
-    hu_hi = val_mean + tolerance
-    print(f"  HU 범위: {hu_lo:.0f} ~ {hu_hi:.0f}")
-
-    hu_bad = (ct_data < hu_lo) | (ct_data > hu_hi)
     struct = ndimage.generate_binary_structure(3, 1)
     trimmed = mask.copy()
 
@@ -1164,21 +1185,8 @@ def _trim_organ(data, ct_data):
         return data
 
     vals = ct_data[organ_mask]
-    val_mean = float(np.mean(vals))
-    val_std = float(np.std(vals))
-    print(f"  장기 전체: {before:,} voxels, intensity {val_mean:.1f} ± {val_std:.1f} HU")
-
-    default_tol = round(max(val_std * 2, 15))
-    tolerance = input_float(
-        f"  허용 HU 범위 HU range (mean ± X, 기본 default {default_tol})",
-        default=default_tol)
+    hu_bad = _build_trim_condition(ct_data, vals, f"장기 전체 Organ {before:,} voxels")
     max_iter = input_int("  최대 반복 Max iterations (기본 default 1)", default=1)
-
-    hu_lo = val_mean - tolerance
-    hu_hi = val_mean + tolerance
-    print(f"  HU 범위: {hu_lo:.0f} ~ {hu_hi:.0f}")
-
-    hu_bad = (ct_data < hu_lo) | (ct_data > hu_hi)
     struct = ndimage.generate_binary_structure(3, 1)
     trimmed = organ_mask.copy()
 
