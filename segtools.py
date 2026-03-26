@@ -200,17 +200,65 @@ def func_remove_high_intensity(data, ct_data=None, **kwargs):
 def func_smooth(data, zooms=None, **kwargs):
     """Smoothing 통합 — 대상 선택 후 실행."""
     target = input_choice("  Smoothing 대상 Select target", [
-        "1: 장기 전체 외곽 Whole organ surface",
+        "1: 신장 Kidney (label 1)",
         "2: 종양 Tumor (label 2)",
         "3: 물혹 Cyst (label 3)",
+        "4: 장기 전체 외곽 Whole organ surface",
     ])
 
     if target == "1":
-        return _smooth_organ(data, zooms)
+        return _smooth_kidney(data, zooms)
     elif target == "2":
         return _smooth_tumor(data, zooms)
-    else:
+    elif target == "3":
         return _smooth_cyst(data, zooms)
+    else:
+        return _smooth_organ(data, zooms)
+
+
+def _smooth_kidney(data, zooms):
+    """신장 라벨 smoothing. 종양/물혹 보호."""
+    kidney_mask = (data == 1)
+    tumor_mask = (data == 2)
+    cyst_mask = (data == 3)
+    protect_mask = tumor_mask | cyst_mask
+    before = int(np.sum(kidney_mask))
+
+    if before == 0:
+        print("  신장 라벨 없음 No kidney label")
+        return data
+
+    sigma = input_float("  Gaussian sigma mm (기본 default 1.0)", default=1.0)
+    close_iter = input_int("  Closing 반복 iterations (기본 default 3)", default=3)
+    open_iter = input_int("  Opening 반복 iterations (기본 default 2)", default=2)
+
+    mask = kidney_mask.astype(np.float64)
+
+    struct = ndimage.generate_binary_structure(3, 1)
+    if close_iter > 0:
+        mask = ndimage.binary_closing(mask, structure=struct, iterations=close_iter).astype(np.float64)
+    if open_iter > 0:
+        mask = ndimage.binary_opening(mask, structure=struct, iterations=open_iter).astype(np.float64)
+
+    sigma_voxels = [sigma / float(z) for z in zooms]
+    smoothed = ndimage.gaussian_filter(mask, sigma=sigma_voxels)
+    mask_final = (smoothed >= 0.5)
+
+    result = data.copy()
+    # 기존 신장 중 smoothed에서 빠진 복셀 → 배경으로
+    lost = kidney_mask & ~mask_final
+    result[lost] = 0
+    # smoothed 신장 적용 — 종양/물혹은 보호, 배경만 흡수
+    new_kidney = mask_final & ~protect_mask & (result == 0)
+    result[new_kidney] = 1
+
+    after = int(np.sum(result == 1))
+    before_s = surface_ratio(kidney_mask.astype(np.uint8))
+    after_s = surface_ratio((result == 1).astype(np.uint8))
+    print(f"  Voxels: {before:,} -> {after:,} ({(after-before)/max(before,1)*100:+.1f}%)")
+    print(f"  Surface: {before_s:.1f}% -> {after_s:.1f}%")
+
+    return result
 
 
 def _smooth_tumor(data, zooms):

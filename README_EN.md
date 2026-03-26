@@ -147,18 +147,19 @@ Combines morphological operations (closing, opening) with Gaussian smoothing to 
 
 | Input | Target | Behavior |
 |-------|--------|----------|
-| `1` | Tumor (label 2) | Smooths tumor boundary only. Keeps only the largest component. Cyst protected. Lost voxels assigned to background/kidney based on proximity |
-| `2` | Cyst (label 3) | Smooths cyst boundary. Constrained within kidney+cyst region. Auto-fills internal holes. Lost voxels assigned to background/kidney based on proximity |
-| `3` | Whole organ surface | Merges kidney+tumor+cyst and smooths the outer surface. Preserves tumor/cyst labels inside |
+| `1` | Kidney (label 1) | Smooths kidney boundary only. Tumor/cyst protected. Absorbs background only |
+| `2` | Tumor (label 2) | Smooths tumor boundary only. Keeps only the largest component. Cyst protected. Lost voxels assigned to background/kidney based on proximity |
+| `3` | Cyst (label 3) | Smooths cyst boundary. Constrained within kidney+cyst region. Auto-fills internal holes. Lost voxels assigned to background/kidney based on proximity |
+| `4` | Whole organ surface | Merges kidney+tumor+cyst and smooths the outer surface. Preserves tumor/cyst labels inside |
 
 **Step 2 — Parameter Input:**
 
-| Parameter | Description | Tumor Default | Cyst Default | Organ Default |
-|-----------|-------------|--------------|-------------|---------------|
-| Gaussian sigma (mm) | Smoothing strength. Larger = smoother | 1.0 | 1.0 | 1.0 |
-| Closing iterations | Gap-filling strength | 3 | 2 | 3 |
-| Opening iterations | Protrusion removal strength | 2 | 1 | 2 |
-| Components to keep | (Organ only) Keep top N components | - | - | 2 |
+| Parameter | Description | Kidney Default | Tumor Default | Cyst Default | Organ Default |
+|-----------|-------------|---------------|--------------|-------------|---------------|
+| Gaussian sigma (mm) | Smoothing strength. Larger = smoother | 1.0 | 1.0 | 1.0 | 1.0 |
+| Closing iterations | Gap-filling strength | 3 | 3 | 2 | 3 |
+| Opening iterations | Protrusion removal strength | 2 | 2 | 1 | 2 |
+| Components to keep | (Organ only) Keep top N components | - | - | - | 2 |
 
 **Tuning Tips:**
 - Rough boundary → increase sigma (1.5–2.0)
