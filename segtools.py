@@ -1147,27 +1147,26 @@ def _trim_single(data, ct_data, label, name):
     hu_bad = _build_trim_condition(ct_data, vals, f"{name} {before:,} voxels")
     max_iter = input_int("  최대 반복 Max iterations (기본 default 1)", default=1)
     struct = ndimage.generate_binary_structure(3, 1)
+    result = data.copy()
     trimmed = mask.copy()
+    bg_mask = (data == 0)
 
     for i in range(max_iter):
-        eroded = ndimage.binary_erosion(trimmed, structure=struct)
-        surface = trimmed & ~eroded
+        # 배경과 인접한 표면만 대상
+        bg_adj = ndimage.binary_dilation(bg_mask, structure=struct)
+        surface = trimmed & bg_adj
         to_remove = surface & hu_bad
         removed = int(np.sum(to_remove))
         if removed == 0:
-            print(f"  {i + 1}회 반복 후 완료")
+            print(f"  {i + 1}회 반복 후 완료 Done after {i + 1} iterations")
             break
         trimmed = trimmed & ~to_remove
+        # 깎인 복셀은 배경으로 (배경 인접이므로)
+        result[to_remove] = 0
+        bg_mask = bg_mask | to_remove  # 다음 반복을 위해 배경 갱신
 
-    removed_mask = mask & ~trimmed
     after = int(np.sum(trimmed))
-    print(f"  트리밍: {before:,} → {after:,} (−{before - after:,} voxels)")
-
-    result = data.copy()
-    to_bg, to_kidney = _determine_removed_label(data, removed_mask)
-    result[to_bg] = 0
-    result[to_kidney] = 1
-    print(f"    → 배경으로: {int(np.sum(to_bg)):,}, 신장으로: {int(np.sum(to_kidney)):,}")
+    print(f"  트리밍 Trimmed: {before:,} → {after:,} (−{before - after:,} voxels)")
 
     return result
 
@@ -1188,28 +1187,26 @@ def _trim_organ(data, ct_data):
     hu_bad = _build_trim_condition(ct_data, vals, f"장기 전체 Organ {before:,} voxels")
     max_iter = input_int("  최대 반복 Max iterations (기본 default 1)", default=1)
     struct = ndimage.generate_binary_structure(3, 1)
+    result = data.copy()
     trimmed = organ_mask.copy()
+    bg_mask = (data == 0)
 
     for i in range(max_iter):
-        eroded = ndimage.binary_erosion(trimmed, structure=struct)
-        surface = trimmed & ~eroded
-        # 장기 외곽만 깎음: 종양/물혹 내부는 보호
-        # 표면 중 내부 라벨(종양/물혹) 경계는 제외하고 외곽만 대상
+        # 배경과 인접한 표면만 대상
+        bg_adj = ndimage.binary_dilation(bg_mask, structure=struct)
+        surface = trimmed & bg_adj
         to_remove = surface & hu_bad
         removed = int(np.sum(to_remove))
         if removed == 0:
-            print(f"  {i + 1}회 반복 후 완료")
+            print(f"  {i + 1}회 반복 후 완료 Done after {i + 1} iterations")
             break
         trimmed = trimmed & ~to_remove
+        result[to_remove] = 0
+        bg_mask = bg_mask | to_remove
 
-    removed_mask = organ_mask & ~trimmed
     after = int(np.sum(trimmed))
-    print(f"  트리밍: {before:,} → {after:,} (−{before - after:,} voxels)")
-
-    # 깎인 복셀은 모두 배경으로 (장기 외곽이므로)
-    result = data.copy()
-    result[removed_mask] = 0
-    print(f"    → 배경으로: {int(np.sum(removed_mask)):,}")
+    print(f"  트리밍 Trimmed: {before:,} → {after:,} (−{before - after:,} voxels)")
+    print(f"    → 배경으로 To background: {int(np.sum(organ_mask & ~trimmed)):,}")
 
     return result
 
